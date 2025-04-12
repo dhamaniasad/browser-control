@@ -100,6 +100,9 @@ interface AgentState {
   apiKey: string | null;
 }
 
+// Variable to hold the timeout ID for the agent loop
+let agentStepTimeoutId: NodeJS.Timeout | null = null; // Correct type for Node environments
+
 // --- Agent Loop Function ---
 async function runAgentStep() {
   // Load state at the beginning of each step
@@ -128,8 +131,9 @@ async function runAgentStep() {
     await verifyTabExists(activeTabId);
 
     // 2. Get current page state
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Preparing to scan page & capture screenshot...' });
-    
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Scanning page...' });
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Scanning current page content.' }); // Action Log
+
     // First ensure tab is fully focused and updated to guarantee permission context
     await chrome.tabs.update(activeTabId, { active: true });
     
@@ -151,10 +155,10 @@ async function runAgentStep() {
 
     // Get tab information for additional context
     const tabInfo = await chrome.tabs.get(activeTabId);
-    
     // Try to capture screenshot with improved error handling
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Capturing screenshot...' });
-    
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Capturing visible part of the page.' }); // Action Log
+
     let screenshotDataUrl: string;
     try {
       // First try - use current window (most reliable for activeTab)
@@ -177,11 +181,11 @@ async function runAgentStep() {
     
     // Process screenshot data
     const base64ImageData = screenshotDataUrl.substring(screenshotDataUrl.indexOf(',') + 1);
-    
     // Create annotated screenshot
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Annotating screenshot...' });
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Annotating screenshot with element markers.' }); // Action Log
     const annotatedImageData = await createAnnotatedScreenshot(screenshotDataUrl, pageElements);
-    
+
     // 3. Construct prompt with ANNOTATED image and element data
     const historyString = currentState.history.slice(-5).join('\n'); // Use currentState
     
@@ -215,10 +219,11 @@ Analyze the attached screenshot which has interactable elements marked with numb
 - scroll (specify direction: up or down)
 - finish (if the goal is complete)
 
-Respond ONLY with a JSON object like {"action": "...", "elementId": <number>, "text": "..."} 
+Respond ONLY with a JSON object like {"action": "...", "elementId": <number>, "text": "..."}
 If the goal is complete, respond with {"action": "finish"}.`;
 
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Calling Gemini API...' });
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Thinking...' });
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Sending page context and screenshot to AI for next action.' }); // Action Log
 
     // 4. Call Gemini API (multimodal with annotated image)
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -263,6 +268,7 @@ If the goal is complete, respond with {"action": "finish"}.`;
     // Handle 'finish' action
     if (actionCommand.action === 'finish') {
       console.log('Agent finished goal.');
+      sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'AI determined the goal is complete.' }); // Action Log
       sendMessageToSidePanel({ type: 'AGENT_RESPONSE', payload: 'Task finished.' });
       currentState.isRunning = false;
       sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Finished)' });
@@ -272,7 +278,9 @@ If the goal is complete, respond with {"action": "finish"}.`;
 
     // Handle 'navigate' action (special case handled by background script)
     if (actionCommand.action === 'navigate' && actionCommand.url) {
-       sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: `Navigating to ${actionCommand.url}...` });
+       const targetUrl = actionCommand.url;
+       sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: `Navigating...` });
+       sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: `Navigating to ${targetUrl}` }); // Action Log
        // Verify before navigate
        await verifyTabExists(activeTabId);
        await chrome.tabs.update(activeTabId, { url: actionCommand.url });
@@ -283,7 +291,9 @@ If the goal is complete, respond with {"action": "finish"}.`;
     }
 
     // 6. Execute other actions using promisified helper
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: `Executing action: ${actionCommand.action}...` });
+    const actionDetail = JSON.stringify(actionCommand);
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: `Executing: ${actionCommand.action}...` });
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: `Executing action: ${actionDetail}` }); // Action Log
     // Verify before executing action
     await verifyTabExists(activeTabId);
     const execResponse = await sendMessageToTabPromise(activeTabId, { type: 'EXECUTE_ACTION_REQUEST', payload: actionCommand });
@@ -297,19 +307,41 @@ If the goal is complete, respond with {"action": "finish"}.`;
     // Still using setTimeout for simplicity, but state is persisted now.
     if (currentState.isRunning) { // Check if still running
        // Small delay before next step
-       setTimeout(runAgentStep, 500);
+       // Clear any previous timeout before setting a new one
+       if (agentStepTimeoutId) {
+         clearTimeout(agentStepTimeoutId);
+       }
+       agentStepTimeoutId = setTimeout(runAgentStep, 500);
     } else {
+       // Clear timeout if stopped for other reasons
+       if (agentStepTimeoutId) {
+         clearTimeout(agentStepTimeoutId);
+         agentStepTimeoutId = null;
+       }
        sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Stopped)' });
     }
 
   } catch (error: any) {
     console.error('Error during agent step:', error);
-    sendMessageToSidePanel({ type: 'AGENT_RESPONSE', payload: `Agent Error: ${error.message}` });
+    const errorMessage = error.message || 'An unknown error occurred.';
+    // Send specific error message as agent response
+    sendMessageToSidePanel({ type: 'AGENT_RESPONSE', payload: `Agent Error: ${errorMessage}` });
+
+    // --- Trigger Intervention Request on Error (Example) ---
+    // In a real scenario, the agent logic would decide if intervention is needed based on the error type.
+    // For now, we trigger it on any error during the step.
+    sendMessageToSidePanel({
+      type: 'AGENT_INTERVENTION_NEEDED',
+      payload: `The agent encountered an error: ${errorMessage}. Please check the page or console for details.`
+    });
+    // ---------------------------------------------------------
+
     // Load the latest state before modifying and saving
     let latestState = await getAgentState();
-    latestState.isRunning = false; // Stop on error
+    latestState.isRunning = false; // Stop the agent loop on error
     await setAgentState(latestState);
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Error)' });
+    // Status is updated by the AGENT_INTERVENTION_NEEDED message handler in App.tsx
+    // sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Error - Intervention Needed)' });
   }
 }
 
@@ -382,6 +414,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
    })(); // End of async IIFE
 
     return true; // Indicate asynchronous response handling for the message listener
+  } else if (message.type === 'END_TASK') {
+    // Handle request to stop the agent
+    (async () => {
+      console.log('Received END_TASK request.');
+      sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Stopping agent...' });
+      // Clear any pending timeout first
+      if (agentStepTimeoutId) {
+        clearTimeout(agentStepTimeoutId);
+        agentStepTimeoutId = null;
+        console.log('Cleared pending agent step timeout.');
+      }
+      const currentState = await getAgentState();
+      if (currentState.isRunning) {
+        currentState.isRunning = false;
+        await setAgentState(currentState);
+        console.log('Agent stopped by user.');
+        sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Stopped by User)' });
+        sendResponse({ status: 'Agent stopped.' });
+      } else {
+        console.log('Agent was not running.');
+        sendResponse({ status: 'Agent already stopped.' });
+      }
+    })();
+    return true; // Indicate asynchronous response handling
   }
   // Handle other message types if needed
 });

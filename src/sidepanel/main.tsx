@@ -1,8 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-// Optional: Import a global CSS file if needed
-// import './index.css';
+import '../styles.css'; // Import our custom CSS instead of Tailwind
+// import '../index.css'; // Keep for when Tailwind is fixed
 
 // Find the root element defined in index.html
 const rootElement = document.getElementById('root');

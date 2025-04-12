@@ -1,0 +1,36 @@
+/* Basic utility styles to test Tailwind's functionality */
+.tw-bg-blue-500 {
+  background-color: #3b82f6;
+}
+
+.tw-text-white {
+  color: #ffffff;
+}
+
+.tw-p-4 {
+  padding: 1rem;
+}
+
+.tw-rounded {
+  border-radius: 0.25rem;
+}
+
+.tw-flex {
+  display: flex;
+}
+
+.tw-flex-col {
+  flex-direction: column;
+}
+
+.tw-items-center {
+  align-items: center;
+}
+
+.tw-justify-between {
+  justify-content: space-between;
+}
+
+.tw-mb-4 {
+  margin-bottom: 1rem;
+}
