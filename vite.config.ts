@@ -16,6 +16,7 @@ export default defineConfig({
   // Configure build output directory (default is 'dist')
   build: {
     outDir: 'dist',
+    sourcemap: true, // Enable sourcemaps for debugging
     rollupOptions: {
       // Optional: Configure input if not automatically handled by crx plugin
       // input: {

@@ -5,11 +5,11 @@ interface InteractableElement {
   tag: string;
   text?: string; // Inner text or accessible name
   attributes: { [key: string]: string }; // Key attributes like id, name, class, placeholder, aria-label
-  // Optional: Add position/size if needed later for visual models or disambiguation
-  // x: number;
-  // y: number;
-  // width: number;
-  // height: number;
+  // Add position/size for visual identification
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 // Function to extract relevant attributes
@@ -62,12 +62,17 @@ const scanPage = (): InteractableElement[] => {
             tag: element.tagName.toLowerCase(),
             text: getAccessibleName(element),
             attributes: getElementAttributes(element),
-            // x: bounds.left,
-            // y: bounds.top,
-            // width: bounds.width,
-            // height: bounds.height,
+            x: Math.round(bounds.left), // Use integer coordinates
+            y: Math.round(bounds.top),
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height),
           };
-          interactableElements.push(elementData);
+          // Filter out tiny elements that might just be layout artifacts
+          if (elementData.width > 5 && elementData.height > 5) {
+             interactableElements.push(elementData);
+          } else {
+             currentId--; // Don't increment ID for ignored elements
+          }
        }
     }
   });
