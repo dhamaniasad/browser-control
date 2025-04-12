@@ -186,10 +186,14 @@ async function runAgentStep() {
     const historyString = currentState.history.slice(-5).join('\n'); // Use currentState
     
     // Image part for multimodal prompt
+    // Extract the Base64 part from the data URL
+    const base64AnnotatedData = annotatedImageData.substring(annotatedImageData.indexOf(',') + 1);
+
+    // Image part for multimodal prompt
     const imagePart = {
       inlineData: {
         mimeType: "image/png",
-        data: annotatedImageData
+        data: base64AnnotatedData // Use only the Base64 part
       }
     };
     
