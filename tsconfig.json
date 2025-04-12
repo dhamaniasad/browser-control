@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext", // Target modern JavaScript features
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ESNext"], // Include standard DOM and ESNext libraries
+    "allowJs": false, // Disallow JavaScript files (enforce TypeScript)
+    "skipLibCheck": true, // Skip type checking of declaration files
+    "esModuleInterop": true, // Enables compatibility with CommonJS modules
+    "allowSyntheticDefaultImports": true, // Allow default imports from modules with no default export
+    "strict": true, // Enable all strict type-checking options
+    "forceConsistentCasingInFileNames": true, // Ensure file names have consistent casing
+    "module": "ESNext", // Use ES modules
+    "moduleResolution": "Node", // Use Node.js module resolution
+    "resolveJsonModule": true, // Allow importing JSON files
+    "isolatedModules": true, // Ensure each file can be safely transpiled without relying on other imports
+    "noEmit": true, // Do not emit output files (Vite handles this)
+    "jsx": "react-jsx", // Use the new JSX transform
+    "types": ["chrome", "node"] // Include types for Chrome extensions and Node.js (for build process)
+  },
+  "include": ["src", "vite.config.ts"], // Include files in the src directory and the Vite config
+  "references": [{ "path": "./tsconfig.node.json" }] // Reference a separate config for Node-specific parts (like Vite config)
+}

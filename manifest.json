@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Control Agent",
+  "version": "0.1.0",
+  "description": "An agentic browser extension using Gemini API to control the browser.",
+  "permissions": [
+    "storage",
+    "scripting",
+    "sidePanel",
+    "tabs",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Open Browser Control Agent"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/contentScripts/pageScanner.ts"],
+      "run_at": "document_idle"
+    },
+     {
+      "matches": ["<all_urls>"],
+      "js": ["src/contentScripts/actionExecutor.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+   "web_accessible_resources": [
+    {
+      "resources": [
+        "index.html",
+        "options.html",
+        "icon16.png",
+        "icon48.png",
+        "icon128.png"
+       ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

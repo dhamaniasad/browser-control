@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "composite": true, // Allows this project to be referenced by other TS projects (like the main tsconfig.json)
+    "skipLibCheck": true, // Skip type checking of declaration files
+    "module": "ESNext", // Use ES modules
+    "moduleResolution": "bundler", // Use bundler-specific module resolution (works well with Vite)
+    "allowSyntheticDefaultImports": true // Allow default imports from modules with no default export
+  },
+  "include": ["vite.config.ts"] // Only include the Vite config file in this specific configuration
+}
