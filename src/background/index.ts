@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
-import { createAnnotatedScreenshot } from "./annotator"; // Import the annotator function
+// No longer need to import annotator since we'll use the content script instead
 
 console.log('Background script loaded.');
 
@@ -181,23 +181,25 @@ async function runAgentStep() {
     
     // Process screenshot data
     const base64ImageData = screenshotDataUrl.substring(screenshotDataUrl.indexOf(',') + 1);
-    // Create annotated screenshot
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Annotating screenshot...' });
-    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Annotating screenshot with element markers.' }); // Action Log
-    const annotatedImageData = await createAnnotatedScreenshot(screenshotDataUrl, pageElements);
-
-    // 3. Construct prompt with ANNOTATED image and element data
+    
+    // Add annotations directly to the page using content script
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Adding annotations...' });
+    sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Adding element markers to the page.' }); // Action Log
+    
+    // Send message to content script to add annotations
+    await sendMessageToTabPromise(activeTabId, { 
+      type: 'ADD_ANNOTATIONS_REQUEST', 
+      payload: pageElements 
+    });
+    
+    // 3. Construct prompt with original screenshot (annotations are visible in the DOM now)
     const historyString = currentState.history.slice(-5).join('\n'); // Use currentState
     
-    // Image part for multimodal prompt
-    // Extract the Base64 part from the data URL
-    const base64AnnotatedData = annotatedImageData.substring(annotatedImageData.indexOf(',') + 1);
-
     // Image part for multimodal prompt
     const imagePart = {
       inlineData: {
         mimeType: "image/png",
-        data: base64AnnotatedData // Use only the Base64 part
+        data: base64ImageData // Use the original screenshot (annotations now visible in DOM)
       }
     };
     
@@ -244,6 +246,12 @@ If the goal is complete, respond with {"action": "finish"}.`;
     const agentResponseText = response.text().trim();
     console.log('Gemini SDK Success Response Text:', agentResponseText);
 
+    // Remove annotations after AI has processed the screenshot
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Removing annotations...' });
+    await sendMessageToTabPromise(activeTabId, { 
+      type: 'REMOVE_ANNOTATIONS_REQUEST' 
+    });
+    
     // 5. Parse Gemini response
     let actionCommand: ActionCommand | null = null;
     if (!agentResponseText) throw new Error('Received empty response from Gemini.');

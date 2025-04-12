@@ -31,9 +31,14 @@
       "js": ["src/contentScripts/pageScanner.ts"],
       "run_at": "document_idle"
     },
-     {
+    {
       "matches": ["<all_urls>"],
       "js": ["src/contentScripts/actionExecutor.ts"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/contentScripts/annotator.ts"],
       "run_at": "document_idle"
     }
   ],
