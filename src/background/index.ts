@@ -15,19 +15,23 @@ interface ActionCommand {
   // Add other potential fields as needed
 }
 
-// Function to send messages to the Side Panel
+// Function to send messages to the Side Panel (fire-and-forget style for status updates)
 const sendMessageToSidePanel = (message: any) => {
-  chrome.runtime.sendMessage(message, (response) => {
-    if (chrome.runtime.lastError) {
-      // Avoid logging errors if the side panel is simply closed
-      if (chrome.runtime.lastError.message !== "Could not establish connection. Receiving end does not exist.") {
-         console.error('Error sending message to side panel:', chrome.runtime.lastError.message);
-      }
-    } else {
-      console.log('Side panel responded:', response);
+  chrome.runtime.sendMessage(message).catch(error => {
+    // Ignore specific errors that commonly occur when the side panel isn't open or closes during operation.
+    // These are generally not critical for the agent's core function if messages are just status updates.
+    const knownIgnorableErrors = [
+      "Could not establish connection. Receiving end does not exist.",
+      "The message port closed before a response was received."
+    ];
+    if (error instanceof Error && !knownIgnorableErrors.includes(error.message)) {
+      // Log other unexpected errors
+      console.warn('Unexpected error sending message to side panel:', error.message);
     }
-  });
-};
+    // No need to log the ignored errors, as they are expected if the panel closes.
+    // console.log('Side panel responded:', response); // Cannot get response with .catch() like this
+    }); // End of .catch() block
+}; // End of sendMessageToSidePanel function
 
 // Helper function to promisify chrome.tabs.sendMessage and check lastError
 function sendMessageToTabPromise(tabId: number, message: any): Promise<any> {
@@ -123,14 +127,15 @@ async function runAgentStep() {
     // Initial verification
     await verifyTabExists(activeTabId);
 
-    // 2. Get current page state (scan + screenshot)
-    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Scanning page & capturing screenshot...' });
-
-    // Verify before capture
-    await verifyTabExists(activeTabId);
-    // Revert to using activeTabId for capture
-    const screenshotDataUrl = await chrome.tabs.captureVisibleTab(activeTabId, { format: 'png' });
-    const base64ImageData = screenshotDataUrl.substring(screenshotDataUrl.indexOf(',') + 1);
+    // 2. Get current page state
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Preparing to scan page & capture screenshot...' });
+    
+    // First ensure tab is fully focused and updated to guarantee permission context
+    await chrome.tabs.update(activeTabId, { active: true });
+    
+    // Skip explicit permission checks - these are in the manifest already
+    // We'll just log that we're proceeding with the permissions in the manifest
+    console.log("Proceeding with manifest permissions");
 
     // Verify before scan
     await verifyTabExists(activeTabId);
@@ -144,22 +149,70 @@ async function runAgentStep() {
     // Save state immediately after modifying history (important!)
     await setAgentState(currentState);
 
-    // --- Create Annotated Screenshot ---
+    // Get tab information for additional context
+    const tabInfo = await chrome.tabs.get(activeTabId);
+    
+    // Try to capture screenshot with improved error handling
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Capturing screenshot...' });
+    
+    let screenshotDataUrl: string;
+    try {
+      // First try - use current window (most reliable for activeTab)
+      console.log("Attempting screenshot capture with default window");
+      screenshotDataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
+      console.log("Screenshot captured successfully with default window");
+    } catch (captureError) {
+      console.warn("First capture attempt failed:", captureError);
+      
+      try {
+        // Second try - use window ID from the tab info
+        console.log("Attempting screenshot with window ID:", tabInfo.windowId);
+        screenshotDataUrl = await chrome.tabs.captureVisibleTab(tabInfo.windowId, { format: 'png' });
+        console.log("Screenshot captured successfully with window ID");
+      } catch (secondError) {
+        console.error("Both screenshot capture methods failed:", secondError);
+        throw new Error(`Screenshot capture failed. Please ensure the extension has proper permissions and try again.`);
+      }
+    }
+    
+    // Process screenshot data
+    const base64ImageData = screenshotDataUrl.substring(screenshotDataUrl.indexOf(',') + 1);
+    
+    // Create annotated screenshot
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Annotating screenshot...' });
     const annotatedImageData = await createAnnotatedScreenshot(screenshotDataUrl, pageElements);
-    // ---
-
+    
     // 3. Construct prompt with ANNOTATED image and element data
     const historyString = currentState.history.slice(-5).join('\n'); // Use currentState
+    
+    // Image part for multimodal prompt
     const imagePart = {
       inlineData: {
         mimeType: "image/png",
-        data: annotatedImageData // Use annotated image data
+        data: annotatedImageData
       }
     };
-    // Update prompt to refer to numbered boxes
-    // Note: Still sending full element JSON might exceed token limits. Consider summarizing.
-    const textPrompt = `User goal: ${currentGoal}\n\nRecent History:\n${historyString}\n\nCurrent page elements (for context, use numbers in image for actions):\n${pageStateString}\n\nAnalyze the attached screenshot which has interactable elements marked with numbered red boxes. Based on the goal, history, and the screenshot, what is the next single action to take? Actions can be navigate, click (specify element id number from the box in the screenshot), input (specify element id number and text), scroll, or finish. Respond ONLY with a JSON object like {"action": "...", "elementId": <number>, "text": "..."}. If the goal is complete, respond with {"action": "finish"}.`;
+    
+    // Detailed prompt with image reference
+    const textPrompt = `User goal: ${currentGoal}
+    
+Recent History:
+${historyString}
+
+Current page: ${tabInfo.title || 'Unknown'} - ${tabInfo.url || 'Unknown URL'}
+
+Current page elements (for context, use numbers in image for actions):
+${pageStateString}
+
+Analyze the attached screenshot which has interactable elements marked with numbered red boxes. Based on the goal, history, and the screenshot, what is the next single action to take? Actions can be:
+- navigate (specify URL)
+- click (specify element id number from the box in the screenshot)
+- input (specify element id number and text)
+- scroll (specify direction: up or down)
+- finish (if the goal is complete)
+
+Respond ONLY with a JSON object like {"action": "...", "elementId": <number>, "text": "..."} 
+If the goal is complete, respond with {"action": "finish"}.`;
 
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Calling Gemini API...' });
 
@@ -176,7 +229,7 @@ async function runAgentStep() {
        ],
     });
 
-    // Send both text prompt and image data
+    // Send both text prompt and image data for multimodal processing
     const result = await model.generateContent([textPrompt, imagePart]);
     const response = result.response;
     const agentResponseText = response.text().trim();
@@ -293,6 +346,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
          chrome.storage.local.get([API_KEY_STORAGE_KEY]), // Still get API key from local storage
          chrome.tabs.query({ active: true, currentWindow: true })
       ]).then(async ([storageResult, tabs]) => { // Make callback async
+        console.log("Loading API key and active tab...", { storageResult, tabs });
          // Check API Key
          if (chrome.runtime.lastError) throw new Error(`Loading API key failed: ${chrome.runtime.lastError.message}`);
          const apiKey = storageResult[API_KEY_STORAGE_KEY];
