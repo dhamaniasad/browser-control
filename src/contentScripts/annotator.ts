@@ -11,76 +11,174 @@ interface InteractableElement {
   height: number;
 }
 
-// Store the created annotation elements for later removal
-let annotationElements: HTMLElement[] = [];
+// Constant for the container element used to hold highlights
+const HIGHLIGHT_CONTAINER_ID = "browser-control-highlight-container";
+
+// Store references to created elements for removal
+let annotationContainer: HTMLElement | null = null;
+let scrollEventListener: (() => void) | null = null;
+let resizeEventListener: (() => void) | null = null;
+
+// Function to highlight a specific element
+function highlightElement(element: HTMLElement, index: number, rect: DOMRect): void {
+  if (!annotationContainer) return;
+
+  // Determine color based on index; the color array repeats as needed
+  const colors = [
+    "#FF0000", "#00FF00", "#0000FF", "#FFA500",
+    "#800080", "#008080", "#FF69B4", "#4B0082",
+    "#FF4500", "#2E8B57", "#DC143C", "#4682B4"
+  ];
+  const colorIndex = index % colors.length;
+  const baseColor = colors[colorIndex];
+  const backgroundColor = baseColor + "1A"; // 10% opacity
+
+  // Create the overlay (bounding box) element
+  const overlay = document.createElement("div");
+  overlay.className = "browser-control-annotation-overlay";
+  overlay.style.position = "fixed";
+  overlay.style.border = `2px solid ${baseColor}`;
+  overlay.style.backgroundColor = backgroundColor;
+  overlay.style.pointerEvents = "none";
+  overlay.style.boxSizing = "border-box";
+  overlay.style.zIndex = "2147483646"; // One less than container
+  
+  // Position the overlay
+  overlay.style.top = `${rect.top}px`;
+  overlay.style.left = `${rect.left}px`;
+  overlay.style.width = `${rect.width}px`;
+  overlay.style.height = `${rect.height}px`;
+
+  // Create a label to display the highlight index
+  const label = document.createElement("div");
+  label.className = "browser-control-annotation-label";
+  label.style.position = "fixed";
+  label.style.background = baseColor;
+  label.style.color = "white";
+  label.style.padding = "1px 4px";
+  label.style.borderRadius = "4px";
+  label.style.fontSize = `${Math.min(12, Math.max(8, rect.height / 2))}px`;
+  label.style.zIndex = "2147483647";
+  label.style.pointerEvents = "none";
+  label.textContent = index.toString();
+
+  // Determine label position
+  const labelWidth = 20;
+  const labelHeight = 16;
+  let labelTop = rect.top + 2;
+  let labelLeft = rect.left + rect.width - labelWidth - 2;
+
+  // If the element is too small, position the label above the overlay
+  if (rect.width < labelWidth + 4 || rect.height < labelHeight + 4) {
+    labelTop = rect.top - labelHeight - 2;
+    labelLeft = rect.left + rect.width - labelWidth;
+  }
+  label.style.top = `${labelTop}px`;
+  label.style.left = `${labelLeft}px`;
+
+  // Add to container
+  annotationContainer.appendChild(overlay);
+  annotationContainer.appendChild(label);
+}
 
 // Function to add annotation overlays to the DOM
-function addAnnotations(elements: InteractableElement[]) {
-  // Create a style element for our annotations if it doesn't exist
-  let styleElement = document.getElementById('browser-control-annotation-styles');
-  if (!styleElement) {
-    styleElement = document.createElement('style');
-    styleElement.id = 'browser-control-annotation-styles';
-    styleElement.textContent = `
-      .browser-control-annotation {
-        position: absolute;
-        border: 2px solid red;
-        z-index: 10000;
-        pointer-events: none;
-        box-sizing: border-box;
+function addAnnotations(elements: InteractableElement[]): number {
+  try {
+    // Create container for annotations if it doesn't exist
+    if (!annotationContainer) {
+      annotationContainer = document.getElementById(HIGHLIGHT_CONTAINER_ID) as HTMLElement;
+      if (!annotationContainer) {
+        annotationContainer = document.createElement("div");
+        annotationContainer.id = HIGHLIGHT_CONTAINER_ID;
+        annotationContainer.style.position = "fixed";
+        annotationContainer.style.pointerEvents = "none";
+        annotationContainer.style.top = "0";
+        annotationContainer.style.left = "0";
+        annotationContainer.style.width = "100%";
+        annotationContainer.style.height = "100%";
+        annotationContainer.style.zIndex = "2147483647";
+        document.body.appendChild(annotationContainer);
       }
-      .browser-control-annotation-label {
-        position: absolute;
-        background-color: red;
-        color: white;
-        font-weight: bold;
-        font-family: sans-serif;
-        font-size: 12px;
-        padding: 2px 4px;
-        z-index: 10001;
-        pointer-events: none;
-        top: 0;
-        left: 0;
-        margin: 3px;
+    }
+    
+    // Map interactable elements to DOM elements
+    const domElements: Array<{element: HTMLElement, rect: DOMRect, id: number}> = [];
+    
+    elements.forEach(el => {
+      // Find the element by position
+      const elementsAtPoint = document.elementsFromPoint(el.x + el.width/2, el.y + el.height/2);
+      if (elementsAtPoint.length > 0) {
+        const element = elementsAtPoint[0] as HTMLElement;
+        const rect = new DOMRect(el.x, el.y, el.width, el.height);
+        domElements.push({element, rect, id: el.id});
       }
-    `;
-    document.head.appendChild(styleElement);
-    annotationElements.push(styleElement);
+    });
+    
+    // Highlight each element
+    domElements.forEach(({element, rect, id}) => {
+      highlightElement(element, id, rect);
+    });
+    
+    // Create function to update annotations on scroll/resize
+    const updateAnnotations = () => {
+      if (!annotationContainer) return;
+      
+      // Clear existing annotations
+      annotationContainer.innerHTML = '';
+      
+      // Re-add annotations with updated positions
+      domElements.forEach(({element, rect, id}) => {
+        // Get updated rect
+        const newRect = element.getBoundingClientRect();
+        highlightElement(element, id, newRect);
+      });
+    };
+    
+    // Remove any existing event listeners
+    if (scrollEventListener) {
+      window.removeEventListener('scroll', scrollEventListener);
+    }
+    if (resizeEventListener) {
+      window.removeEventListener('resize', resizeEventListener);
+    }
+    
+    // Add event listeners for scroll and resize
+    scrollEventListener = updateAnnotations;
+    resizeEventListener = updateAnnotations;
+    window.addEventListener('scroll', scrollEventListener, { passive: true });
+    window.addEventListener('resize', resizeEventListener, { passive: true });
+    
+    return elements.length;
+  } catch (error) {
+    console.error('Error adding annotations:', error);
+    return 0;
   }
-
-  // Create annotation elements for each interactable element
-  elements.forEach(el => {
-    // Create box
-    const box = document.createElement('div');
-    box.className = 'browser-control-annotation';
-    box.style.top = `${el.y}px`;
-    box.style.left = `${el.x}px`;
-    box.style.width = `${el.width}px`;
-    box.style.height = `${el.height}px`;
-    
-    // Create label
-    const label = document.createElement('div');
-    label.className = 'browser-control-annotation-label';
-    label.textContent = el.id.toString();
-    
-    // Add to DOM
-    box.appendChild(label);
-    document.body.appendChild(box);
-    annotationElements.push(box);
-  });
-
-  return annotationElements.length;
 }
 
 // Function to remove all annotation elements
-function removeAnnotations() {
-  annotationElements.forEach(el => {
-    if (el && el.parentNode) {
-      el.parentNode.removeChild(el);
+function removeAnnotations(): boolean {
+  try {
+    // Remove event listeners
+    if (scrollEventListener) {
+      window.removeEventListener('scroll', scrollEventListener);
+      scrollEventListener = null;
     }
-  });
-  annotationElements = [];
-  return true;
+    if (resizeEventListener) {
+      window.removeEventListener('resize', resizeEventListener);
+      resizeEventListener = null;
+    }
+    
+    // Remove container
+    if (annotationContainer && annotationContainer.parentNode) {
+      annotationContainer.parentNode.removeChild(annotationContainer);
+      annotationContainer = null;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error removing annotations:', error);
+    return false;
+  }
 }
 
 // Listen for messages from the background script
