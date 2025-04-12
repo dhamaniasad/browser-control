@@ -62,6 +62,7 @@ const AGENT_STATE_KEY = 'agentState';
 // Default initial state
 const initialAgentState: AgentState = {
   isRunning: false,
+  abortRequested: false, // Add a flag to track abort requests
   currentGoal: null,
   history: [],
   activeTabId: null,
@@ -94,6 +95,7 @@ async function setAgentState(newState: AgentState): Promise<void> {
 // let agentState: AgentState = { ...initialAgentState };
 interface AgentState {
   isRunning: boolean;
+  abortRequested: boolean; // Add flag to track abort requests
   currentGoal: string | null;
   history: string[]; // Simple history of actions/observations
   activeTabId: number | null;
@@ -109,7 +111,18 @@ async function runAgentStep() {
   let currentState = await getAgentState();
   console.log('runAgentStep called. Current agentState:', JSON.stringify(currentState));
 
-  // Check state validity after loading
+  // Check for abort flag first - highest priority
+  if (currentState.abortRequested) {
+    console.log('Agent step aborted due to abort request');
+    currentState.isRunning = false;
+    currentState.abortRequested = false; // Reset the abort flag
+    await setAgentState(currentState);
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Aborted)' });
+    sendMessageToSidePanel({ type: 'AGENT_RESPONSE', payload: 'Task stopped by user.' });
+    return;
+  }
+
+  // Check state validity
   if (!currentState.isRunning || !currentState.currentGoal || !currentState.apiKey || !currentState.activeTabId) {
     console.log('Agent step skipped: Not running or missing required state. isRunning:', currentState.isRunning, 'hasGoal:', !!currentState.currentGoal, 'hasApiKey:', !!currentState.apiKey, 'hasTabId:', !!currentState.activeTabId);
     // If state is invalid but was supposed to be running, reset it
@@ -203,7 +216,7 @@ async function runAgentStep() {
       }
     };
     
-    // Detailed prompt with image reference
+    // Detailed prompt with image reference and stronger emphasis on JSON format
     const textPrompt = `User goal: ${currentGoal}
     
 Recent History:
@@ -221,8 +234,13 @@ Analyze the attached screenshot which has interactable elements marked with numb
 - scroll (specify direction: up or down)
 - finish (if the goal is complete)
 
-Respond ONLY with a JSON object like {"action": "...", "elementId": <number>, "text": "..."}
-If the goal is complete, respond with {"action": "finish"}.`;
+CRITICAL INSTRUCTION: Your response MUST CONTAIN ONLY a valid JSON object without any explanatory text before or after the JSON. Do not include code blocks or backticks. Your ENTIRE response should be only the JSON object.
+
+CORRECT RESPONSE FORMAT: {"action": "click", "elementId": 5}
+INCORRECT RESPONSE FORMAT: I think we should click element 5. {"action": "click", "elementId": 5}
+INCORRECT RESPONSE FORMAT: \`\`\`json {"action": "click", "elementId": 5} \`\`\`
+
+If the goal is complete, respond with: {"action": "finish"}`;
 
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Thinking...' });
     sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Sending page context and screenshot to AI for next action.' }); // Action Log
@@ -240,6 +258,19 @@ If the goal is complete, respond with {"action": "finish"}.`;
        ],
     });
 
+    // Check for abort request before making the potentially long-running API call
+    // Refresh state to get the latest abort flag
+    currentState = await getAgentState();
+    if (currentState.abortRequested) {
+      console.log('Agent aborting before AI request due to abort request');
+      currentState.isRunning = false;
+      currentState.abortRequested = false; // Reset the abort flag
+      await setAgentState(currentState);
+      sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Aborted)' });
+      sendMessageToSidePanel({ type: 'AGENT_RESPONSE', payload: 'Task stopped by user.' });
+      return;
+    }
+
     // Send both text prompt and image data for multimodal processing
     const result = await model.generateContent([textPrompt, imagePart]);
     const response = result.response;
@@ -252,18 +283,50 @@ If the goal is complete, respond with {"action": "finish"}.`;
       type: 'REMOVE_ANNOTATIONS_REQUEST' 
     });
     
+    // Helper function to extract JSON from Gemini's response
+    function extractJsonFromResponse(response: string): string | null {
+      // Pattern 1: Match JSON inside code blocks (```json {...} ```)
+      const codeBlockMatch = response.match(/```(?:json)?([^`]*?{.*?})[^`]*?```/s);
+      if (codeBlockMatch && codeBlockMatch[1]) {
+        console.log('Found JSON in code block format');
+        return codeBlockMatch[1].trim();
+      }
+      
+      // Pattern 2: Direct JSON object pattern
+      const jsonObjectMatch = response.match(/{[\s\S]*"action"[\s\S]*}/);
+      if (jsonObjectMatch) {
+        console.log('Found direct JSON object format');
+        return jsonObjectMatch[0];
+      }
+      
+      // Pattern 3: Try the original basic cleanup as a last resort
+      const cleanedForJson = response.replace(/^```json\s*|\s*```$/g, '').trim();
+      if (cleanedForJson.startsWith('{') && cleanedForJson.endsWith('}')) {
+        console.log('Found JSON after basic cleanup');
+        return cleanedForJson;
+      }
+      
+      return null;
+    }
+    
     // 5. Parse Gemini response
     let actionCommand: ActionCommand | null = null;
     if (!agentResponseText) throw new Error('Received empty response from Gemini.');
 
     try {
-      const cleanedJsonString = agentResponseText.replace(/^```json\s*|\s*```$/g, '');
-      const parsedJson = JSON.parse(cleanedJsonString);
+      const extractedJson = extractJsonFromResponse(agentResponseText);
+      if (!extractedJson) {
+        throw new Error('No valid JSON found in response');
+      }
+      
+      console.log('Extracted JSON:', extractedJson);
+      const parsedJson = JSON.parse(extractedJson);
       if (parsedJson && typeof parsedJson === 'object' && typeof parsedJson.action === 'string') {
          actionCommand = parsedJson as ActionCommand;
          console.log('Parsed action command:', actionCommand);
       } else { throw new Error('Invalid action format received from Gemini.'); }
     } catch (parseError: any) {
+      console.error('JSON parsing error:', parseError);
       throw new Error(`Could not parse action from Gemini. Response: ${agentResponseText}`);
     }
 
@@ -377,6 +440,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Define initialState within this scope
       const initialState: AgentState = {
          isRunning: true, // Set to running
+         abortRequested: false, // Initialize abort flag
          currentGoal: userGoal,
          history: [`User Goal: ${userGoal}`],
          activeTabId: null, // Will be set below
@@ -423,27 +487,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     return true; // Indicate asynchronous response handling for the message listener
   } else if (message.type === 'END_TASK') {
-    // Handle request to stop the agent
-    (async () => {
-      console.log('Received END_TASK request.');
-      sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Stopping agent...' });
-      // Clear any pending timeout first
-      if (agentStepTimeoutId) {
-        clearTimeout(agentStepTimeoutId);
-        agentStepTimeoutId = null;
-        console.log('Cleared pending agent step timeout.');
-      }
+  // Handle request to stop the agent
+  (async () => {
+    console.log('Received END_TASK request.');
+    sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Stopping agent...' });
+    
+    // Clear any pending timeout first
+    if (agentStepTimeoutId) {
+      clearTimeout(agentStepTimeoutId);
+      agentStepTimeoutId = null;
+      console.log('Cleared pending agent step timeout.');
+    }
+    
+    try {
+      // Get and update agent state
       const currentState = await getAgentState();
+      
       if (currentState.isRunning) {
+        // Set abort flag immediately
+        currentState.abortRequested = true;
+        await setAgentState(currentState);
+        console.log('Abort flag set - agent will stop at next opportunity');
+        
+        // Also set isRunning to false to prevent scheduling new steps
         currentState.isRunning = false;
         await setAgentState(currentState);
         console.log('Agent stopped by user.');
+        
+        // Notify UI
         sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Idle (Stopped by User)' });
-        sendResponse({ status: 'Agent stopped.' });
+        sendMessageToSidePanel({ type: 'AGENT_ACTION_LOG', payload: 'Task ended by user.' });
+        
+        // Send response
+        sendResponse({ status: 'Agent stopping...' });
       } else {
         console.log('Agent was not running.');
         sendResponse({ status: 'Agent already stopped.' });
       }
+    } catch (error) {
+      console.error('Error stopping agent:', error);
+      sendResponse({ status: 'Error stopping agent' });
+    }
     })();
     return true; // Indicate asynchronous response handling
   }
