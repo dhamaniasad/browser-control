@@ -1,8 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import OptionsApp from './OptionsApp';
-import '../styles.css'; // Import our custom CSS instead of Tailwind
-// import '../index.css'; // Keep for when Tailwind is fixed
+import '../tailwind-full.css'; // Import full Tailwind CSS with no purging
 
 // Find the root element defined in options.html
 const rootElement = document.getElementById('root-options');

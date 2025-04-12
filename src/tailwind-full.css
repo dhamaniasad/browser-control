@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Import the base styles */
+@tailwind base;
+
+/* Import component styles */
+@tailwind components;
+
+/* Import utility styles */
+@tailwind utilities;
+
+/* Import all variants */
+@tailwind variants;
