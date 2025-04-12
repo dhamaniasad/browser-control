@@ -3,6 +3,14 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/ge
 
 console.log('Background script loaded.');
 
+async function abortCheck() {
+  let s = await getAgentState();
+  if (!s.isRunning || s.abortRequested) {
+    console.log("abortCheck triggered. Stopping current step immediately.");
+    throw new Error('ABORT_CHECK');
+  }
+}
+
 const API_KEY_STORAGE_KEY = 'gemini_api_key'; // Same key as in OptionsApp
 
 // Define the expected structure for actions from Gemini
@@ -163,8 +171,9 @@ async function runAgentStep() {
     console.log('Received page elements:', pageElements);
     const pageStateString = JSON.stringify(pageElements, null, 2);
     currentState.history.push(`Observation: Page scanned. ${pageElements.length} elements found.`);
-    // Save state immediately after modifying history (important!)
+// Save state immediately after modifying history (important!)
     await setAgentState(currentState);
+    await abortCheck();
 
     // Get tab information for additional context
     const tabInfo = await chrome.tabs.get(activeTabId);
@@ -194,6 +203,7 @@ async function runAgentStep() {
     
     // Process screenshot data
     const base64ImageData = screenshotDataUrl.substring(screenshotDataUrl.indexOf(',') + 1);
+    await abortCheck();
     
     // Add annotations directly to the page using content script
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Adding annotations...' });
@@ -204,8 +214,9 @@ async function runAgentStep() {
       type: 'ADD_ANNOTATIONS_REQUEST', 
       payload: pageElements 
     });
+    await abortCheck();
     
-    // 3. Construct prompt with original screenshot (annotations are visible in the DOM now)
+    // 3. Construct multimodal prompt (goal, history, annotated screenshot, element data)
     const historyString = currentState.history.slice(-5).join('\n'); // Use currentState
     
     // Image part for multimodal prompt
@@ -273,10 +284,11 @@ If the goal is complete, respond with: {"action": "finish"}`;
 
     // Send both text prompt and image data for multimodal processing
     const result = await model.generateContent([textPrompt, imagePart]);
+    await abortCheck();
     const response = result.response;
     const agentResponseText = response.text().trim();
     console.log('Gemini SDK Success Response Text:', agentResponseText);
-
+    
     // Remove annotations after AI has processed the screenshot
     sendMessageToSidePanel({ type: 'AGENT_STATUS_UPDATE', payload: 'Removing annotations...' });
     await sendMessageToTabPromise(activeTabId, { 
@@ -329,6 +341,7 @@ If the goal is complete, respond with: {"action": "finish"}`;
       console.error('JSON parsing error:', parseError);
       throw new Error(`Could not parse action from Gemini. Response: ${agentResponseText}`);
     }
+    await abortCheck();
 
     // --- Action Handling ---
     if (!actionCommand) throw new Error('Action command is null after parsing attempt.');
@@ -368,11 +381,12 @@ If the goal is complete, respond with: {"action": "finish"}`;
     // Verify before executing action
     await verifyTabExists(activeTabId);
     const execResponse = await sendMessageToTabPromise(activeTabId, { type: 'EXECUTE_ACTION_REQUEST', payload: actionCommand });
-
+    
     // Error handling is now done via catch block below
     console.log('Action execution response:', execResponse);
     currentState.history.push(`Result: ${JSON.stringify(execResponse)}`); // Add result to history
     await setAgentState(currentState); // Save state
+    await abortCheck();
 
     // 7. Loop: Trigger next step
     // Still using setTimeout for simplicity, but state is persisted now.
